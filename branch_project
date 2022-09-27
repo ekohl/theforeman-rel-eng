@@ -1,0 +1,59 @@
+#!/bin/bash -e
+
+. settings
+
+# TODO: settings?
+REMOTE_UPSTREAM=upstream
+REMOTE_FORK=$(whoami)
+
+if [[ -z $1 ]] ; then
+	PROJECTS=$TAR_PROJECTS
+else
+	PROJECTS=$@
+fi
+
+for project in $PROJECTS ; do
+	(
+		cd "$GIT_DIR/$project"
+		if ! git diff --quiet --exit-code ; then
+			echo "Checkout in $PWD is dirty"
+			exit 1
+		fi
+	)
+done
+
+for project in $PROJECTS ; do
+	(
+		cd "$GIT_DIR/$project"
+		git fetch $REMOTE_UPSTREAM
+		# Relies on upstream/HEAD being up to date. Use this to update
+		#git remote set-head $REMOTE_UPSTREAM --auto
+		git checkout -b "${VERSION}-stable" $REMOTE_UPSTREAM/HEAD
+	)
+done
+
+for project in $PROJECTS ; do
+	(
+		cd "$GIT_DIR/$project"
+		git push --set-upstream $REMOTE_UPSTREAM HEAD
+		echo "Branched ${project}"
+	)
+done
+
+# The installer locks its dependencies after branching, which should be reviewed
+for project in $PROJECTS ; do
+	if [[ $project == foreman-installer ]] ; then
+		(
+			cd "$GIT_DIR/$project"
+			git checkout -b ${VERSION}-stable-pin-modules
+			bundle exec rake pin_modules
+			sed -i '/Puppetfile.lock/d' .gitignore
+			bundle update
+			bundle exec librarian-puppet install
+			git add Puppetfile*
+			git commit --message "Pin modules for Foreman ${VERSION}"
+			git push $REMOTE_FORK HEAD --set-upstream --quiet
+			hub pull-request -b ${VERSION}-stable
+		)
+	fi
+done
